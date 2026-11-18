@@ -1,0 +1,394 @@
+diff --git a/indra/newview/llagentcamera.cpp b/indra/newview/llagentcamera.cpp
+index 8b7818c8..6ec882ac 100644
+--- a/indra/newview/llagentcamera.cpp
++++ b/indra/newview/llagentcamera.cpp
+@@ -44,6 +44,7 @@
+ #include "llviewercamera.h"
+ #include "llviewercontrol.h"
+ #include "llviewerjoystick.h"
++#include "lltoolfocus.h" // <FS:TPS>
+ #include "llviewermenu.h"
+ #include "llviewerobjectlist.h"
+ #include "llviewerregion.h"
+@@ -379,7 +380,11 @@ void LLAgentCamera::resetView(bool reset_camera, bool change_camera, bool moveme
+     if (reset_camera && !freeze_time)
+     // </FS:PP>
+     {
+-        if (!gViewerWindow->getLeftMouseDown() && cameraThirdPerson())
++        // <FS:TPS> Preserve mouse-controlled pitch while walking with the latch on.
++        // if (!gViewerWindow->getLeftMouseDown() && cameraThirdPerson())
++        if (!gViewerWindow->getLeftMouseDown() && cameraThirdPerson()
++            && !LLToolCamera::getInstance()->thirdPersonSteering())
++        // </FS:TPS>
+         {
+             // leaving mouse-steer mode
+             LLVector3 agent_at_axis = gAgent.getAtAxis();
+@@ -2106,7 +2111,11 @@ LLVector3d LLAgentCamera::calcCameraPositionTargetGlobal(bool *hit_limit)
+ 
+                     lag_interp *= u;
+ 
+-                    if (gViewerWindow->getLeftMouseDown() && gViewerWindow->getLastPick().mObjectID == gAgentAvatarp->getID())
++                    // <FS:TPS> Match avatar dragging while flying, too.
++                    // if (gViewerWindow->getLeftMouseDown() && gViewerWindow->getLastPick().mObjectID == gAgentAvatarp->getID())
++                    if (LLToolCamera::getInstance()->thirdPersonSteering()
++                        || (gViewerWindow->getLeftMouseDown() && gViewerWindow->getLastPick().mObjectID == gAgentAvatarp->getID()))
++                    // </FS:TPS>
+                     {
+                         // disable camera lag when using mouse-directed steering
+                         target_lag.clearVec();
+diff --git a/indra/newview/lltoolfocus.cpp b/indra/newview/lltoolfocus.cpp
+index 7644f942..89f154f3 100644
+--- a/indra/newview/lltoolfocus.cpp
++++ b/indra/newview/lltoolfocus.cpp
+@@ -56,6 +56,14 @@
+ #include "llfloatercamera.h"
+ #include "llmenugl.h"
+ 
++// <FS:TPS>
++#include "llappviewer.h"
++#include "llfocusmgr.h"
++#include "lltoolpie.h"
++#include "llviewerjoystick.h"
++#include "llwindow.h"
++// </FS:TPS>
++
+ // Globals
+ bool gCameraBtnZoom = true;
+ bool gCameraBtnOrbit = false;
+@@ -88,6 +96,69 @@ LLToolCamera::LLToolCamera()
+ LLToolCamera::~LLToolCamera()
+ { }
+ 
++// <FS:TPS> Reuse the ordinary camera/agent rotation path without a fake click.
++bool LLToolCamera::canStartThirdPersonSteering() const
++{
++    return gViewerWindow && !gDisconnected && gAgent.isInitialized()
++        && isAgentAvatarValid() && !gAgentAvatarp->isSitting()
++        && gAgent.getTeleportState() == LLAgent::TELEPORT_NONE
++        && gAgentCamera.cameraThirdPerson()
++        && !LLViewerJoystick::getInstance()->getOverrideCamera()
++        && !LLFloaterCamera::inFreeCameraMode()
++        && !gSavedSettings.getBOOL("FreezeTime")
++        && gFocusMgr.getAppHasFocus()
++        && !gFocusMgr.focusLocked() && !gFocusMgr.getMouseCapture()
++        && LLToolMgr::getInstance()->getCurrentToolset() == gBasicToolset
++        && LLToolMgr::getInstance()->getBaseTool() == LLToolPie::getInstance()
++        && !LLToolMgr::getInstance()->usingTransientTool();
++}
++
++void LLToolCamera::toggleThirdPersonSteering()
++{
++    if (mThirdPersonSteering)
++    {
++        stopThirdPersonSteering();
++        return;
++    }
++    if (!canStartThirdPersonSteering())
++    {
++        return;
++    }
++
++    gFocusMgr.setKeyboardFocus(NULL);
++    LLToolTipMgr::instance().blockToolTips();
++    gAgentCamera.setFocusOnAvatar(true, false);
++
++    mMouseDownX = gViewerWindow->getCurrentMouseX();
++    mMouseDownY = gViewerWindow->getCurrentMouseY();
++    mMouseUpX = mMouseDownX;
++    mMouseUpY = mMouseDownY;
++    mMouseUpMask = MASK_NONE;
++    mAccumX = mAccumY = 0;
++    mOutsideSlopX = mOutsideSlopY = false;
++    mClickPickPending = false;
++    mValidClickPoint = true;
++    mMouseSteering = true; // Existing A/D handling now strafes, as when dragging the avatar.
++    mThirdPersonSteering = true;
++
++    LLToolMgr::getInstance()->setTransientTool(this);
++    setMouseCapture(true);
++    gViewerWindow->hideCursor();
++    gViewerWindow->moveCursorToCenter();
++    gViewerWindow->getWindow()->setMouseClipping(true);
++}
++
++void LLToolCamera::stopThirdPersonSteering()
++{
++    if (mThirdPersonSteering)
++    {
++        // handleMouseUp restores the original cursor position and releases capture.
++        // releaseMouse clears the latch before calling back into the tool manager.
++        handleMouseUp(mMouseDownX, mMouseDownY, MASK_NONE);
++    }
++}
++// </FS:TPS>
++
+ // virtual
+ void LLToolCamera::handleSelect()
+ {
+@@ -102,6 +173,9 @@ void LLToolCamera::handleSelect()
+ // virtual
+ void LLToolCamera::handleDeselect()
+ {
++    // <FS:TPS> Includes application focus loss and camera toolset changes.
++    stopThirdPersonSteering();
++    // </FS:TPS>
+ //  gAgent.setLookingAtAvatar(false);
+ 
+     // Make sure that temporary selection won't pass anywhere except pie tool.
+@@ -115,6 +189,13 @@ void LLToolCamera::handleDeselect()
+ 
+ bool LLToolCamera::handleMouseDown(S32 x, S32 y, MASK mask)
+ {
++    // <FS:TPS> A click releases the cursor; it must not touch an object underneath.
++    if (mThirdPersonSteering)
++    {
++        stopThirdPersonSteering();
++        return true;
++    }
++    // </FS:TPS>
+     // Ensure a mouseup
+     setMouseCapture(true);
+ 
+@@ -270,6 +351,13 @@ void LLToolCamera::pickCallback(const LLPickInfo& pick_info)
+ // if a modal dialog pops up during Alt-Zoom. JC
+ void LLToolCamera::releaseMouse()
+ {
++    // <FS:TPS> Clear before clearTransientTool(), which can call handleDeselect().
++    if (mThirdPersonSteering)
++    {
++        gViewerWindow->getWindow()->setMouseClipping(false);
++    }
++    mThirdPersonSteering = false;
++    // </FS:TPS>
+     // Need to tell the sim that the mouse button is up, since this
+     // tool is no longer working and cursor is visible (despite actual
+     // mouse button status).
+@@ -345,6 +433,46 @@ static bool right_hold_mouse_walk = false;//<FS:JL> Mouse movement by Singularit
+ 
+ bool LLToolCamera::handleHover(S32 x, S32 y, MASK mask)
+ {
++    // <FS:TPS> Ignore orbit/pan modifiers and camera-panel selections in this mode.
++    if (mThirdPersonSteering)
++    {
++        if (!hasMouseCapture() || gDisconnected || !isAgentAvatarValid()
++            || gAgentAvatarp->isSitting()
++            || gAgent.getTeleportState() != LLAgent::TELEPORT_NONE
++            || !gAgentCamera.cameraThirdPerson() || !gAgentCamera.getFocusOnAvatar()
++            || LLViewerJoystick::getInstance()->getOverrideCamera()
++            || LLFloaterCamera::inFreeCameraMode()
++            || gSavedSettings.getBOOL("FreezeTime")
++            || !gFocusMgr.getAppHasFocus()
++            || gFocusMgr.getKeyboardFocus() || gFocusMgr.focusLocked())
++        {
++            stopThirdPersonSteering();
++            gViewerWindow->setCursor(UI_CURSOR_ARROW);
++            return true;
++        }
++
++        const S32 width = gViewerWindow->getWorldViewWidthScaled();
++        if (width > 0)
++        {
++            const F32 radians_per_pixel = 360.f * DEG_TO_RAD / width;
++            const S32 dx = gViewerWindow->getCurrentMouseDX();
++            const S32 dy = gViewerWindow->getCurrentMouseDY();
++            if (dx != 0)
++            {
++                gAgentCamera.cameraOrbitAround(-dx * radians_per_pixel);
++            }
++            if (dy != 0)
++            {
++                gAgentCamera.cameraOrbitOver(-dy * radians_per_pixel);
++            }
++        }
++        // The viewer requires a cursor to be set on each hover, even when hidden.
++        gViewerWindow->setCursor(UI_CURSOR_ARROW);
++        gViewerWindow->hideCursor();
++        gViewerWindow->moveCursorToCenter();
++        return true;
++    }
++    // </FS:TPS>
+     //<FS:JL> Mouse movement by Singularity
+     if (right_hold_mouse_walk)
+     {
+@@ -489,6 +617,13 @@ bool LLToolCamera::handleHover(S32 x, S32 y, MASK mask)
+ //<FS:JL> Mouse movement by Singularity
+ bool LLToolCamera::handleRightMouseDown(S32 x, S32 y, MASK mask)
+ {
++    // <FS:TPS> Do not start mouse-walk when releasing the latched camera.
++    if (mThirdPersonSteering)
++    {
++        stopThirdPersonSteering();
++        return true;
++    }
++    // </FS:TPS>
+     if (mMouseSteering)
+     {
+         agent_push_forward(KEYSTATE_DOWN);
+diff --git a/indra/newview/lltoolfocus.h b/indra/newview/lltoolfocus.h
+index c87cd204..df72fa16 100644
+--- a/indra/newview/lltoolfocus.h
++++ b/indra/newview/lltoolfocus.h
+@@ -55,6 +55,13 @@ public:
+     static void pickCallback(const LLPickInfo& pick_info);
+     bool mouseSteerMode() { return mMouseSteering; }
+ 
++    // <FS:TPS> Latched third-person steering, independent of mouse buttons.
++    bool canStartThirdPersonSteering() const;
++    bool thirdPersonSteering() const { return mThirdPersonSteering; }
++    void toggleThirdPersonSteering();
++    void stopThirdPersonSteering();
++    // </FS:TPS>
++
+ protected:
+     // called from handleMouseUp and onMouseCaptureLost to "let go"
+     // of the mouse and make it visible JC
+@@ -71,6 +78,7 @@ protected:
+     bool    mClickPickPending;
+     bool    mValidSelection;
+     bool    mMouseSteering;
++    bool    mThirdPersonSteering = false; // <FS:TPS>
+     S32     mMouseUpX;  // needed for releaseMouse()
+     S32     mMouseUpY;
+     MASK    mMouseUpMask;
+diff --git a/indra/newview/lltoolmgr.cpp b/indra/newview/lltoolmgr.cpp
+index fc8205e6..224db6c1 100644
+--- a/indra/newview/lltoolmgr.cpp
++++ b/indra/newview/lltoolmgr.cpp
+@@ -247,6 +247,12 @@ LLToolset* LLToolMgr::getCurrentToolset()
+ 
+ void LLToolMgr::setCurrentTool( LLTool* tool )
+ {
++    // <FS:TPS> A captured camera must not prevent switching to a build tool.
++    if (LLToolCamera::instanceExists())
++    {
++        LLToolCamera::getInstance()->stopThirdPersonSteering();
++    }
++    // </FS:TPS>
+     if (mTransientTool)
+     {
+         mTransientTool = NULL;
+@@ -486,6 +492,12 @@ void LLToolMgr::toggleMarketplace(const LLSD& sdname)
+ 
+ void LLToolMgr::setTransientTool(LLTool* tool)
+ {
++    // <FS:TPS> Release the old camera before another transient tool takes over.
++    if (LLToolCamera::instanceExists() && tool != LLToolCamera::getInstance())
++    {
++        LLToolCamera::getInstance()->stopThirdPersonSteering();
++    }
++    // </FS:TPS>
+     if (!tool)
+     {
+         clearTransientTool();
+diff --git a/indra/newview/llviewermenu.cpp b/indra/newview/llviewermenu.cpp
+index a9abbf6e..b4761ef8 100644
+--- a/indra/newview/llviewermenu.cpp
++++ b/indra/newview/llviewermenu.cpp
+@@ -136,6 +136,7 @@
+ #include "llworldmap.h"
+ #include "pipeline.h"
+ #include "llviewerjoystick.h"
++#include "lltoolfocus.h" // <FS:TPS>
+ #include "llfloatercamera.h"
+ #include "lluilistener.h"
+ #include "llappearancemgr.h"
+@@ -5996,6 +5997,34 @@ class LLViewLookAtLastChatter : public view_listener_t
+     }
+ };
+ 
++// <FS:TPS>
++class LLViewThirdPersonSteering : public view_listener_t
++{
++    bool handleEvent(const LLSD& userdata) override
++    {
++        LLToolCamera::getInstance()->toggleThirdPersonSteering();
++        return true;
++    }
++};
++
++class LLViewCheckThirdPersonSteering : public view_listener_t
++{
++    bool handleEvent(const LLSD& userdata) override
++    {
++        return LLToolCamera::getInstance()->thirdPersonSteering();
++    }
++};
++
++class LLViewEnableThirdPersonSteering : public view_listener_t
++{
++    bool handleEvent(const LLSD& userdata) override
++    {
++        LLToolCamera* camera = LLToolCamera::getInstance();
++        return camera->thirdPersonSteering() || camera->canStartThirdPersonSteering();
++    }
++};
++// </FS:TPS>
++
+ class LLViewMouselook : public view_listener_t
+ {
+     bool handleEvent(const LLSD& userdata)
+@@ -12876,6 +12905,11 @@ void initialize_menus()
+     // </FS:TT>
+ 
+     // View menu
++    // <FS:TPS>
++    view_listener_t::addMenu(new LLViewThirdPersonSteering(), "View.ThirdPersonSteering");
++    view_listener_t::addMenu(new LLViewCheckThirdPersonSteering(), "View.CheckThirdPersonSteering");
++    view_listener_t::addMenu(new LLViewEnableThirdPersonSteering(), "View.EnableThirdPersonSteering");
++    // </FS:TPS>
+     view_listener_t::addMenu(new LLViewMouselook(), "View.Mouselook");
+     view_listener_t::addMenu(new LLViewJoystickFlycam(), "View.JoystickFlycam");
+     view_listener_t::addMenu(new LLViewResetView(), "View.ResetView");
+diff --git a/indra/newview/llviewerwindow.cpp b/indra/newview/llviewerwindow.cpp
+index ecf1aa87..12321f0e 100644
+--- a/indra/newview/llviewerwindow.cpp
++++ b/indra/newview/llviewerwindow.cpp
+@@ -3251,6 +3251,13 @@ bool LLViewerWindow::handleKeyUp(KEY key, MASK mask)
+ // Takes a single keydown event, usually when UI is visible
+ bool LLViewerWindow::handleKey(KEY key, MASK mask)
+ {
++    // <FS:TPS> Escape releases the cursor even if a menu or floater has focus.
++    if (key == KEY_ESCAPE && LLToolCamera::getInstance()->thirdPersonSteering())
++    {
++        LLToolCamera::getInstance()->stopThirdPersonSteering();
++        return true;
++    }
++    // </FS:TPS>
+     // hide tooltips on keypress
+     LLToolTipMgr::instance().blockToolTips();
+ 
+diff --git a/indra/newview/skins/default/xui/en/menu_viewer.xml b/indra/newview/skins/default/xui/en/menu_viewer.xml
+index 961465d2..c4ac4324 100644
+--- a/indra/newview/skins/default/xui/en/menu_viewer.xml
++++ b/indra/newview/skins/default/xui/en/menu_viewer.xml
+@@ -486,6 +486,18 @@
+ 			 function="View.ToggleCameraFloater" />
+ 		</menu_item_check>
+ 
++        <!-- <FS:TPS> -->
++        <menu_item_check
++         label="Third-Person Mouse Steering"
++         name="Third Person Mouse Steering"
++         shortcut="control|alt|Y"
++         allow_key_repeat="false">
++            <menu_item_check.on_check function="View.CheckThirdPersonSteering" />
++            <menu_item_check.on_click function="View.ThirdPersonSteering" />
++            <menu_item_check.on_enable function="View.EnableThirdPersonSteering" />
++        </menu_item_check>
++        <!-- </FS:TPS> -->
++
+         <menu_item_separator/>
+ 
+         <menu
+diff --git a/indra/newview/skins/default/xui/es/menu_viewer.xml b/indra/newview/skins/default/xui/es/menu_viewer.xml
+index 3b2a35de..98afc2a8 100644
+--- a/indra/newview/skins/default/xui/es/menu_viewer.xml
++++ b/indra/newview/skins/default/xui/es/menu_viewer.xml
+@@ -27,6 +27,7 @@
+ 			<menu_item_check label="Salto rápido" name="Avatar Ignore Prejump"/>
+ 		</menu>
+ 		<menu_item_check label="Controles de cámara" name="Camera Controls"/>
++		<menu_item_check label="Cámara con ratón en tercera persona" name="Third Person Mouse Steering"/>
+ 		<menu label="Salud del avatar" name="avhealth">
+ 			<menu_item_call label="Detener mis animaciones" name="Stop Animating My Avatar"/>
+ 			<menu_item_call label="Deshacer deformación del avatar" name="undeform_avatar"/>

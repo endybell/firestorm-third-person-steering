@@ -1,0 +1,136 @@
+name: Build Firestorm Third Person Steering
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-windows.yml'
+      - 'third-person-steering.patch'
+      - 'build-requirements.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firestorm-tps-windows
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      AUTOBUILD_VSVER: "170"
+      AUTOBUILD_BUILD_ID: ${{ github.run_number }}
+      AUTOBUILD_VARIABLES_FILE: ${{ github.workspace }}/build-variables/variables
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout patch and build instructions
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout official Firestorm 7.2.5 source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: FirestormViewer/phoenix-firestorm
+          ref: 4ac201fdc56127de27de34567286885f4e75d194
+          path: viewer
+          persist-credentials: false
+
+      - name: Checkout official build variables
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: FirestormViewer/fs-build-variables
+          ref: c17312d38377c003977cf5b6dcc83c6042eba194
+          path: build-variables
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build utilities
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install -r build-requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Python dependencies failed' }
+          choco install nsis --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          $pythonPath = (Get-Command python.exe).Source
+          "PYTHON=$pythonPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Autobuild invokes bash. Prefer Git for Windows over WSL's bash.exe.
+          'C:\Program Files\Git\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'C:\Program Files\Git\usr\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Apply camera patch
+        shell: pwsh
+        run: |
+          git -C viewer apply --check ../third-person-steering.patch
+          if ($LASTEXITCODE -ne 0) { throw 'Patch does not match the pinned source' }
+          git -C viewer apply ../third-person-steering.patch
+          if ($LASTEXITCODE -ne 0) { throw 'Applying patch failed' }
+          git -C viewer diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Patch whitespace check failed' }
+
+      - name: Configure Windows viewer
+        shell: cmd
+        working-directory: viewer
+        run: >-
+          autobuild configure -A 64 -c ReleaseFS_open --
+          --package --chan ThirdPersonSteering --no-opensim
+          -DLL_TESTS:BOOL=OFF
+          -DUSE_KDU:BOOL=OFF -DUSE_FMODSTUDIO:BOOL=OFF
+          -DUSE_OPENAL:BOOL=ON -DHAVOK_TPV:BOOL=OFF
+          -DOPENSIM:BOOL=OFF -DUSE_DISCORD:BOOL=OFF
+
+      - name: Compile and package
+        shell: cmd
+        working-directory: viewer
+        run: autobuild build -A 64 -c ReleaseFS_open --no-configure
+
+      - name: Collect installer and checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(Get-ChildItem viewer/build-vc170-64/newview -Recurse -Filter '*_Setup.exe')
+          if ($installers.Count -ne 1) { throw "Expected one installer; found $($installers.Count)" }
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item -LiteralPath $installers[0].FullName -Destination dist
+          Copy-Item README.md,TESTING.md,VALIDATION.md,LICENSE-source.txt,third-person-steering.patch -Destination dist
+          $hash = Get-FileHash -LiteralPath (Join-Path dist $installers[0].Name) -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $($installers[0].Name)" | Set-Content dist/SHA256SUMS.txt
+          @(
+            'Source: FirestormViewer/phoenix-firestorm',
+            'Base: 4ac201fdc56127de27de34567286885f4e75d194',
+            "Patch repository commit: $env:GITHUB_SHA",
+            "Build: $env:GITHUB_RUN_NUMBER",
+            'Channel: Firestorm-ThirdPersonSteering',
+            'Unsigned personal build; OpenAL enabled; FMOD/KDU/Havok disabled.',
+            'Compilation success does not substitute for the in-world tests in TESTING.md.'
+          ) | Set-Content dist/BUILD-INFO.txt
+
+      - name: Upload installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Firestorm-ThirdPersonSteering-Windows-x64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-diagnostics
+          path: |
+            viewer/logs/
+            viewer/build-vc170-64/logs/
+            viewer/build-vc170-64/CMakeFiles/CMakeConfigureLog.yaml
+            viewer/build-vc170-64/CMakeCache.txt
+          if-no-files-found: ignore
+          retention-days: 7

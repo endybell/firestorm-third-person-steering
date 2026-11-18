@@ -18,13 +18,13 @@ El modo no depende de RLV y conserva el recorrido normal de rotación y las rest
 
 El repositorio de compilación solo necesita estos archivos, incluido `.github/workflows/build-windows.yml` y `third-person-steering.patch`.
 
-1. Usar un repositorio privado propio para estos archivos.
+1. Usar un repositorio propio para estos archivos.
 2. Abrir **Actions → Build Firestorm Third Person Steering → Run workflow**.
 3. Cuando finalice correctamente, descargar **Firestorm-ThirdPersonSteering-Windows-x64** en la sección **Artifacts** de esa ejecución.
 4. Extraer el ZIP y ejecutar el archivo `*_Setup.exe`. El nombre del canal personalizado distingue esta instalación de Firestorm Release.
 5. Completar las pruebas de `TESTING.md` antes de considerarlo validado para uso habitual.
 
-El flujo se ejecuta únicamente de forma manual, en un único equipo Windows de GitHub. No publica una release ni sube archivos a Marketplace. Se aplican la cuota y los límites de Actions de tu cuenta.
+El flujo se ejecuta al cambiar el parche, el flujo o las dependencias en `main`, y también puede iniciarse manualmente. Usa un único equipo Windows de GitHub. No publica una release ni sube archivos a Marketplace. Se aplican la cuota y los límites de Actions de tu cuenta.
 
 ## Base y diferencias de la compilación
 
