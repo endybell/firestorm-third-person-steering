@@ -1,6 +1,6 @@
 # Pruebas dentro del visor
 
-Estado: pendientes de compilar y ejecutar en una sesión real de Second Life.
+Estado: compilación completada correctamente; estas pruebas siguen pendientes en una sesión real de Second Life.
 
 ## Cámara y movimiento
 
