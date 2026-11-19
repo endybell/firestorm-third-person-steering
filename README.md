@@ -1,8 +1,10 @@
 # Firestorm: cámara con ratón en tercera persona
 
-Cambio nativo para Firestorm 7.2.5. Este paquete contiene el parche y el flujo de compilación de Windows; **no es todavía un instalador**.
+Cambio nativo para Firestorm 7.2.5. **El instalador de Windows ya compiló correctamente** el 18 de noviembre de 2026. La prueba de interacción dentro de Second Life sigue pendiente.
 
-## Uso previsto después de compilar
+[Descargar el ZIP del instalador desde GitHub Actions](https://github.com/endybell/firestorm-third-person-steering/actions/runs/44327382990/artifacts/14442247941). Este artefacto está disponible hasta el 2 de diciembre de 2026; después se puede volver a ejecutar el flujo. Extraer el ZIP y ejecutar `Phoenix-Firestorm-ThirdPersonSteering_LEGACY-7-2-5-1_Setup.exe`.
+
+## Controles implementados (pendientes de prueba dentro de SL)
 
 - **Ctrl + Alt + Y** activa o desactiva el modo sin pulsar sobre el avatar.
 - También aparece en **Avatar → Cámara con ratón en tercera persona** (en inglés: **Third-Person Mouse Steering**).
